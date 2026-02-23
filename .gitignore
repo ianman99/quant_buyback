@@ -1,0 +1,4 @@
+.env
+.DS_Store
+kis_devlp.yaml
+__pycache__/
