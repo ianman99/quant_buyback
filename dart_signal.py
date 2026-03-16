@@ -26,11 +26,9 @@ DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME_DART = os.getenv('DB_NAME_DART')
 DB_NAME_PRICE = os.getenv('DB_NAME_PRICE')
-DB_NAME_RECORD = os.getenv('DB_NAME_RECORD')
 
 db_url_dart = f'mysql+mysqlconnector://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME_DART}'
 db_url_price = f'mysql+mysqlconnector://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME_PRICE}'
-db_url_record = f'mysql+mysqlconnector://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME_RECORD}'
 
 # 연결 풀링 및 연결 유지 설정
 DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 10))
@@ -56,15 +54,6 @@ engine_price = create_engine(
     pool_timeout=DB_POOL_TIMEOUT
 )
 
-engine_record = create_engine(
-    db_url_record,
-    pool_size=DB_POOL_SIZE,
-    max_overflow=DB_MAX_OVERFLOW,
-    pool_recycle=DB_POOL_RECYCLE,
-    pool_pre_ping=True,
-    pool_timeout=DB_POOL_TIMEOUT
-)
-
 # 데이터베이스 연결 상태 확인 및 재연결 함수
 def check_db_connection():
     """데이터베이스 연결 상태를 확인하고 필요시 재연결"""
@@ -73,8 +62,6 @@ def check_db_connection():
         with engine_dart.connect() as conn:
             conn.execute(text("SELECT 1"))
         with engine_price.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        with engine_record.connect() as conn:
             conn.execute(text("SELECT 1"))
         print("데이터베이스 연결 상태: 정상")
         return True
@@ -85,7 +72,6 @@ def check_db_connection():
             # 연결 풀 재시작
             engine_dart.dispose()
             engine_price.dispose()
-            engine_record.dispose()
             time.sleep(5)  # 5초 대기 후 재연결
             return True
         except Exception as reconnect_error:
@@ -459,22 +445,101 @@ def current_price(code):
     current_price = int(rt_data['stck_prpr'].iloc[0])
     return current_price
 
-def execute_buy_order(stock_code, buyback_ratio):
+def get_execution_detail(stock_code):
+    """당일 특정 종목의 최신 체결 정보를 조회"""
+    today = datetime.now().strftime("%Y%m%d")
+    try:
+        time.sleep(1)  # 주문 체결 반영 대기
+        df = kb.get_inquire_daily_ccld_lst(dv="01", inqr_strt_dt=today, inqr_end_dt=today)
+        if df is not None and not df.empty:
+            code = stock_code[1:] if stock_code.startswith('A') else stock_code
+            filtered = df[df['pdno'] == code]
+            if not filtered.empty:
+                return filtered.iloc[-1]  # 가장 최근 주문
+        return None
+    except Exception as e:
+        print(f"체결 정보 조회 오류: {e}")
+        return None
+
+def format_execution_info(detail):
+    """체결 상세 정보를 포맷팅"""
+    if detail is None:
+        return "체결 정보를 조회할 수 없습니다."
+
+    ord_dt = str(detail.get('ord_dt', ''))
+    ord_tmd = str(detail.get('ord_tmd', ''))
+    if len(ord_tmd) == 6:
+        ord_tmd = f"{ord_tmd[:2]}:{ord_tmd[2:4]}:{ord_tmd[4:]}"
+    if len(ord_dt) == 8:
+        ord_dt = f"{ord_dt[:4]}-{ord_dt[4:6]}-{ord_dt[6:]}"
+
+    avg_price = int(float(detail.get('avg_prvs', 0) or 0))
+    tot_qty = detail.get('tot_ccld_qty', '0')
+    tot_amt = int(float(detail.get('tot_ccld_amt', 0) or 0))
+    prsm_tlex = int(float(detail.get('prsm_tlex_smtl', 0) or 0))
+
+    info = (
+        f"주문일시: {ord_dt} {ord_tmd}\n"
+        f"매입평균가격: {avg_price:,}원\n"
+        f"총체결수량: {tot_qty}주\n"
+        f"총체결금액: {tot_amt:,}원\n"
+        f"추정제비용: {prsm_tlex:,}원"
+    )
+    return info
+
+def format_buy_message(buyback_info, execution_detail):
+    """매수 체결 텔레그램 메시지 생성"""
+    msg = "[매수 체결 알림]\n"
+    msg += "=" * 28 + "\n\n"
+    msg += "[자사주 매입 정보]\n"
+    msg += f"종목명: {buyback_info['corp_name']}\n"
+    msg += f"종목코드: {buyback_info['stock_code']}\n"
+    msg += f"공시유형: {buyback_info['report_nm']}\n"
+    msg += f"매입금액: {buyback_info['amount']:,} 억원\n"
+    msg += f"시가총액: {buyback_info['market_cap']:,} 억원\n"
+    msg += f"비율: {buyback_info['ratio']}%\n"
+    msg += f"매입기간: {buyback_info['start_dt']} ~ {buyback_info['end_dt']}\n"
+    msg += f"목적: {buyback_info['purpose']}\n\n"
+    msg += "[체결 정보]\n"
+    msg += format_execution_info(execution_detail) + "\n\n"
+    msg += "=" * 28 + "\n"
+    msg += f"공시링크: https://dart.fss.or.kr/dsaf001/main.do?rcpNo={buyback_info['rcept_no']}"
+    return msg
+
+def format_sell_message(stock_code, prdt_name, profit_rate, execution_detail):
+    """매도 체결 텔레그램 메시지 생성"""
+    msg = "[매도 체결 알림]\n"
+    msg += "=" * 28 + "\n\n"
+    msg += "[매도 정보]\n"
+    msg += f"종목코드: {stock_code}\n"
+    if prdt_name:
+        msg += f"종목명: {prdt_name}\n"
+    msg += f"수익률: {profit_rate}%\n\n"
+    msg += "[체결 정보]\n"
+    msg += format_execution_info(execution_detail) + "\n\n"
+    msg += "=" * 28
+    return msg
+
+def execute_buy_order(stock_code, buyback_ratio, buyback_info=None):
     """
-    자사주 매입 비율(buyback_ratio)을 바탕으로 주문금액과 주문수량을 산정하여 주식 매수를 실행하고,
-    주문 내역을 데이터베이스에 기록하는 함수입니다.
-    
+    자사주 매입 비율(buyback_ratio)을 바탕으로 주문금액과 주문수량을 산정하여 주식 매수를 실행하는 함수입니다.
+
     매개변수:
       - stock_code: 주식 종목 코드 (예: "A005930")
       - buyback_ratio: 자사주 매입 비율 (예: 2.35 => 정수 내림 후 2% 적용)
-    
+      - buyback_info: 자사주 매입 공시 정보 (텔레그램 전송용)
+
     동작:
       1. 비율을 정수 내림하여 1% 당 10만원의 주문금액(order_amount)을 계산.
       2. 현재가(current_price)를 조회하여 주문수량(order_quantity)를 계산 (order_amount // current_price).
       3. 주문수량이 1 미만이면 주문을 실행하지 않음.
-      4. 주문 실행 후 증권사 API의 주문 결과를 기록.
-      5. 주문 내역을 데이터베이스 테이블("stock_order_history")에 저장.
+      4. 주문 실행 후 체결 정보를 조회하여 텔레그램으로 전송.
     """
+    # 0. 비율 검증 (100% 이상이면 오류로 판단)
+    if buyback_ratio >= 100:
+        print(f"자사주 매입 비율 오류: {buyback_ratio}% (100% 이상). 주문을 건너뜁니다.")
+        return None
+
     # 1. 비율 정수 내림 및 주문금액 계산
     effective_ratio = int(buyback_ratio)  # 예: 2.35 -> 2
     order_amount = effective_ratio * 100000  # 1% 당 10만원
@@ -495,25 +560,20 @@ def execute_buy_order(stock_code, buyback_ratio):
         print(f"주문 실행 중 오류 발생: {e}")
         return None  # 오류 발생 시 이후 단계 실행하지 않고 함수 종료
 
-    # 4. 주문 내역 기록을 위한 데이터 구성
-    order_record = {
-        "stock_code": stock_code,
-        "buyback_ratio": buyback_ratio,
-        "order_amount": order_amount,
-        "current_price": cp,
-        "order_quantity": order_quantity,
-        "order_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-
-    # 5. 데이터프레임 생성 후 데이터베이스에 기록
-    df_order = pd.DataFrame([order_record])
-    safe_to_sql(df_order, 'stock_buy_back', engine_record, if_exists='append')
+    # 3-1. 체결 정보 조회 후 텔레그램 전송 (매수)
+    if buyback_info is not None:
+        try:
+            execution_detail = get_execution_detail(stock_code)
+            msg = format_buy_message(buyback_info, execution_detail)
+            asyncio.run(send_message(msg))
+        except Exception as e:
+            print(f"매수 텔레그램 전송 오류: {e}")
     
 # 잔고 조회
 def get_balance():
     # [국내주식] 주문/계좌 > 주식잔고조회 (보유종목리스트)
     rt_data = kb.get_inquire_balance_lst()
-    selected_data = rt_data[['pdno', 'hldg_qty', 'evlu_pfls_rt']]
+    selected_data = rt_data[['pdno', 'prdt_name', 'hldg_qty', 'evlu_pfls_rt']]
     return selected_data
 
 # 수익률이 +10% 이상이거나 -5% 이하인 종목은 매도
@@ -526,9 +586,15 @@ def execute_sell_order():
         if profit_rate >= 10 or profit_rate <= -5:
             sell(row['pdno'], row['hldg_qty'])
             print(f"매도 완료: 종목코드{row['pdno']} 수량{row['hldg_qty']} 수익률{row['evlu_pfls_rt']}")
-            
-            # 텔레그램으로 전송
-            asyncio.run(send_message(f"매도 완료: 종목코드{row['pdno']} 수량{row['hldg_qty']} 수익률{row['evlu_pfls_rt']}"))
+
+            # 체결 정보 조회 후 텔레그램 전송 (매도)
+            try:
+                execution_detail = get_execution_detail(row['pdno'])
+                msg = format_sell_message(row['pdno'], row.get('prdt_name', ''), profit_rate, execution_detail)
+                asyncio.run(send_message(msg))
+            except Exception as e:
+                print(f"매도 텔레그램 전송 오류: {e}")
+                asyncio.run(send_message(f"매도 완료: 종목코드{row['pdno']} 수량{row['hldg_qty']} 수익률{row['evlu_pfls_rt']}"))
 
 # 함수 실행
 if __name__ == "__main__":
@@ -581,7 +647,7 @@ if __name__ == "__main__":
                         buyback_ratio = row['ratio']
                         
                         # execute_buy_order 함수를 호출하여 주문 실행 및 주문 내역 DB 기록
-                        execute_buy_order(stock_code, buyback_ratio)
+                        execute_buy_order(stock_code, buyback_ratio, buyback_info=row)
                         
                     except Exception as e:
                         print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 매수 주문 처리 중 오류 발생: {e}")
