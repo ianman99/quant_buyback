@@ -478,6 +478,8 @@ def format_execution_info(detail):
     if detail is None:
         return "체결 정보를 조회할 수 없습니다."
 
+    pdno = str(detail.get('pdno', ''))
+    prdt_name = str(detail.get('prdt_name', ''))
     ord_dt = str(detail.get('ord_dt', ''))
     ord_tmd = str(detail.get('ord_tmd', ''))
     if len(ord_tmd) == 6:
@@ -488,38 +490,31 @@ def format_execution_info(detail):
     avg_price = int(float(detail.get('avg_prvs', 0) or 0))
     tot_qty = detail.get('tot_ccld_qty', '0')
     tot_amt = int(float(detail.get('tot_ccld_amt', 0) or 0))
-    prsm_tlex = int(float(detail.get('prsm_tlex_smtl', 0) or 0))
 
-    info = (
+    info = f"종목코드: {pdno}\n"
+    if prdt_name:
+        info += f"종목명: {prdt_name}\n"
+    info += (
         f"주문일시: {ord_dt} {ord_tmd}\n"
-        f"매입평균가격: {avg_price:,}원\n"
+        f"체결평균가격: {avg_price:,}원\n"
         f"총체결수량: {tot_qty}주\n"
-        f"총체결금액: {tot_amt:,}원\n"
-        f"추정제비용: {prsm_tlex:,}원"
+        f"총체결금액: {tot_amt:,}원"
     )
     return info
 
-def format_buy_message(buyback_info, execution_detail):
+def format_buy_message(execution_detail):
     """매수 체결 텔레그램 메시지 생성"""
-    msg = "[매수 체결 알림]\n"
-    msg += "=" * 28 + "\n\n"
-    msg += "[매수 정보]\n"
-    msg += format_execution_info(execution_detail) + "\n\n"
-    msg += "=" * 28
+    msg = "[매수 체결 알림]\n\n"
+    msg += "[체결 정보]\n"
+    msg += format_execution_info(execution_detail)
     return msg
 
-def format_sell_message(stock_code, prdt_name, profit_rate, execution_detail):
+def format_sell_message(profit_rate, execution_detail):
     """매도 체결 텔레그램 메시지 생성"""
-    msg = "[매도 체결 알림]\n"
-    msg += "=" * 28 + "\n\n"
-    msg += "[매도 정보]\n"
-    msg += f"종목코드: {stock_code}\n"
-    if prdt_name:
-        msg += f"종목명: {prdt_name}\n"
-    msg += f"수익률: {profit_rate}%\n\n"
+    msg = "[매도 체결 알림]\n\n"
     msg += "[체결 정보]\n"
-    msg += format_execution_info(execution_detail) + "\n\n"
-    msg += "=" * 28
+    msg += format_execution_info(execution_detail) + "\n"
+    msg += f"수익률: {profit_rate}%"
     return msg
 
 def execute_buy_order(stock_code, buyback_ratio, buyback_info=None):
@@ -568,7 +563,7 @@ def execute_buy_order(stock_code, buyback_ratio, buyback_info=None):
     if buyback_info is not None:
         try:
             execution_detail = get_execution_detail(stock_code)
-            msg = format_buy_message(buyback_info, execution_detail)
+            msg = format_buy_message(execution_detail)
             asyncio.run(send_message(msg))
         except Exception as e:
             print(f"매수 텔레그램 전송 오류: {e}")
@@ -596,7 +591,7 @@ def execute_sell_order():
             # 체결 정보 조회 후 텔레그램 전송 (매도)
             try:
                 execution_detail = get_execution_detail(row['pdno'])
-                msg = format_sell_message(row['pdno'], row.get('prdt_name', ''), profit_rate, execution_detail)
+                msg = format_sell_message(profit_rate, execution_detail)
                 asyncio.run(send_message(msg))
             except Exception as e:
                 print(f"매도 텔레그램 전송 오류: {e}")
