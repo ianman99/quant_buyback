@@ -375,11 +375,15 @@ def main():
                 lambda row: pd.Series(crawling_data(row['rcept_no'], row['report_nm'])), axis=1)
             new_entries['market_cap'] = new_entries.apply(
                 lambda row: get_market_cap(row['stock_code']), axis=1)
+            # crawling 실패로 amount/market_cap이 None인 행 제거
+            new_entries = new_entries.dropna(subset=['amount', 'market_cap'])
+            new_entries = new_entries[new_entries['market_cap'] > 0]
+            if new_entries.empty:
+                print("유효한 데이터가 없습니다 (크롤링 실패)")
+                return None
             new_entries['ratio'] = (new_entries['amount'] / new_entries['market_cap'] * 100).round(2)
-            new_entries['amount'] = (new_entries['amount'] / 1e8).round(0)
-            new_entries['market_cap'] = (new_entries['market_cap'] / 1e8).round(0)
-            new_entries['amount'] = new_entries['amount'].astype(int)
-            new_entries['market_cap'] = new_entries['market_cap'].astype(int)
+            new_entries['amount'] = (new_entries['amount'] / 1e8).round(0).astype(int)
+            new_entries['market_cap'] = (new_entries['market_cap'] / 1e8).round(0).astype(int)
             
             # 원하는 컬럼 순서
             column_order = [
@@ -433,11 +437,19 @@ def main():
 # 주식 시장가 주문
 def buy(code, qty):
     rt_data = kb.get_order_cash(ord_dv="buy",itm_no=code, qty=qty, unpr="0")
-    print(rt_data.KRX_FWDG_ORD_ORGNO + "+" + rt_data.ODNO + "+" + rt_data.ORD_TMD) # 주문접수조직번호+주문접수번호+주문시각
-    
+    if rt_data is None:
+        print(f"매수 주문 실패: 종목코드 {code} (API 응답 없음)")
+        return None
+    print(rt_data.KRX_FWDG_ORD_ORGNO + "+" + rt_data.ODNO + "+" + rt_data.ORD_TMD)
+    return rt_data
+
 def sell(code, qty):
     rt_data = kb.get_order_cash(ord_dv="sell",itm_no=code, qty=qty, unpr="0")
-    print(rt_data.KRX_FWDG_ORD_ORGNO + "+" + rt_data.ODNO + "+" + rt_data.ORD_TMD) # 주문접수조직번호+주문접수번호+주문시각
+    if rt_data is None:
+        print(f"매도 주문 실패: 종목코드 {code} (API 응답 없음)")
+        return None
+    print(rt_data.KRX_FWDG_ORD_ORGNO + "+" + rt_data.ODNO + "+" + rt_data.ORD_TMD)
+    return rt_data
     
 # [국내주식] 기본시세 > 주식현재가 시세 (종목번호 6자리)
 def current_price(code):
@@ -555,7 +567,9 @@ def execute_buy_order(stock_code, buyback_ratio, buyback_info=None):
     
     # 3. 주문 실행 (buy 함수 호출)
     try:
-        buy(order_stock_code, order_quantity)
+        result = buy(order_stock_code, order_quantity)
+        if result is None:
+            return None
     except Exception as e:
         print(f"주문 실행 중 오류 발생: {e}")
         return None  # 오류 발생 시 이후 단계 실행하지 않고 함수 종료
@@ -584,7 +598,9 @@ def execute_sell_order():
         profit_rate = float(row['evlu_pfls_rt'])
         
         if profit_rate >= 10 or profit_rate <= -5:
-            sell(row['pdno'], row['hldg_qty'])
+            result = sell(row['pdno'], row['hldg_qty'])
+            if result is None:
+                continue
             print(f"매도 완료: 종목코드{row['pdno']} 수량{row['hldg_qty']} 수익률{row['evlu_pfls_rt']}")
 
             # 체결 정보 조회 후 텔레그램 전송 (매도)
