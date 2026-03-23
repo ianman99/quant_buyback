@@ -503,19 +503,9 @@ def format_buy_message(buyback_info, execution_detail):
     """매수 체결 텔레그램 메시지 생성"""
     msg = "[매수 체결 알림]\n"
     msg += "=" * 28 + "\n\n"
-    msg += "[자사주 매입 정보]\n"
-    msg += f"종목명: {buyback_info['corp_name']}\n"
-    msg += f"종목코드: {buyback_info['stock_code']}\n"
-    msg += f"공시유형: {buyback_info['report_nm']}\n"
-    msg += f"매입금액: {buyback_info['amount']:,} 억원\n"
-    msg += f"시가총액: {buyback_info['market_cap']:,} 억원\n"
-    msg += f"비율: {buyback_info['ratio']}%\n"
-    msg += f"매입기간: {buyback_info['start_dt']} ~ {buyback_info['end_dt']}\n"
-    msg += f"목적: {buyback_info['purpose']}\n\n"
-    msg += "[체결 정보]\n"
+    msg += "[매수 정보]\n"
     msg += format_execution_info(execution_detail) + "\n\n"
-    msg += "=" * 28 + "\n"
-    msg += f"공시링크: https://dart.fss.or.kr/dsaf001/main.do?rcpNo={buyback_info['rcept_no']}"
+    msg += "=" * 28
     return msg
 
 def format_sell_message(stock_code, prdt_name, profit_rate, execution_detail):
